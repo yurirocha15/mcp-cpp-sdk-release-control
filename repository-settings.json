@@ -1,0 +1,111 @@
+{
+    "schema_version": 1,
+    "repository": {
+        "full_name": "yurirocha15/mcp-cpp-sdk-release-control",
+        "visibility": "public",
+        "default_branch": "main",
+        "issues": false,
+        "projects": false,
+        "wiki": false,
+        "discussions": false,
+        "pages": false,
+        "secret_scanning": true,
+        "push_protection": true,
+        "immutable_releases": true,
+        "retention_days": 90
+    },
+    "actions": {
+        "default_workflow_permissions": "read",
+        "can_approve_pull_requests": false,
+        "github_hosted_runners_only": true,
+        "require_full_sha": true,
+        "allowed_actions": {
+            "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        },
+        "allowed_workflows": {
+            "ci.yml": [
+                "push",
+                "pull_request"
+            ],
+            "conan-center-pr.yml": [
+                "workflow_dispatch"
+            ]
+        }
+    },
+    "main_ruleset": {
+        "enforcement": "active",
+        "pull_request_required": true,
+        "required_approvals": 0,
+        "signed_commits": true,
+        "linear_history": true,
+        "conversation_resolution": true,
+        "deletion_blocked": true,
+        "force_push_blocked": true,
+        "bypass_actors": [],
+        "required_checks": [
+            "actionlint",
+            "release-control-policy",
+            "publisher-unit-tests",
+            "secret-scan"
+        ]
+    },
+    "control_tag_ruleset": {
+        "tag": "release-control-v1",
+        "enforcement": "active",
+        "update_blocked": true,
+        "deletion_blocked": true,
+        "bypass_actors": []
+    },
+    "control_release": {
+        "tag": "release-control-v1",
+        "draft": false,
+        "prerelease": false,
+        "immutable": true,
+        "asset_inventory": []
+    },
+    "environment": {
+        "name": "conan-center-pr",
+        "required_reviewer_count": 1,
+        "prevent_self_review": false,
+        "administrator_bypass": false,
+        "deployment_tag": "release-control-v1",
+        "wait_timer_minutes": 10,
+        "secrets": [
+            "CONAN_CENTER_PR_BOT_PAT"
+        ],
+        "variables": [
+            "CONAN_CENTER_PR_BOT_USER_ID"
+        ]
+    },
+    "repository_variables": [
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_NODE_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_CREATED_AT",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_BODY_SHA256",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID",
+        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NAME",
+        "CONAN_CENTER_FORK_REPOSITORY_ID",
+        "CONAN_CENTER_FORK_OWNER_ID",
+        "CONAN_CENTER_UPSTREAM_REPOSITORY_ID",
+        "SOURCE_REPOSITORY_ID",
+        "SOURCE_OWNER_ID",
+        "SOURCE_SIGNING_PRIMARY_FINGERPRINT",
+        "SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT",
+        "SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT"
+    ],
+    "workflow_constants": {
+        "bot_login": "mcp-cpp-sdk-release-bot",
+        "source_repository": "yurirocha15/mcp-cpp-sdk",
+        "fork_repository": "yurirocha15/conan-center-index",
+        "upstream_repository": "conan-io/conan-center-index",
+        "upstream_base_branch": "master"
+    }
+}

@@ -1,0 +1,320 @@
+name: conan-center-pr
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Canonical stable source tag
+        required: true
+        type: string
+      source_commit_sha:
+        description: Exact source commit
+        required: true
+        type: string
+      source_workflow_head_sha:
+        description: Exact source release-workflow head commit
+        required: true
+        type: string
+      provider_control_sha:
+        description: Exact immutable release-control commit
+        required: true
+        type: string
+      github_release_id:
+        description: Immutable GitHub release numeric ID
+        required: true
+        type: string
+      source_workflow_run_id:
+        description: Successful source release workflow run ID
+        required: true
+        type: string
+      release_manifest_sha256:
+        description: Signed release manifest SHA-256
+        required: true
+        type: string
+      fork_branch:
+        description: Exact reviewed Conan recipe branch
+        required: true
+        type: string
+      fork_head_sha:
+        description: Exact reviewed fork head
+        required: true
+        type: string
+      recipe_tree_sha256:
+        description: Canonical reviewed recipe tree digest
+        required: true
+        type: string
+      request_uuid:
+        description: Unique canonical request UUID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conan-center-pr-${{ inputs.source_tag }}
+  cancel-in-progress: false
+
+jobs:
+  control:
+    name: verify immutable provider control context
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require the exact immutable control tag and commit
+        env:
+          EXPECTED_CONTROL_SHA: ${{ inputs.provider_control_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/tags/release-control-v1
+          test "$GITHUB_SHA" = "$EXPECTED_CONTROL_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            'yurirocha15/mcp-cpp-sdk-release-control/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v1'
+
+  verify:
+    name: independently verify release and recipe
+    needs: control
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source_tag: ${{ steps.validate.outputs.source_tag }}
+      source_commit_sha: ${{ steps.validate.outputs.source_commit_sha }}
+      fork_branch: ${{ steps.validate.outputs.fork_branch }}
+      fork_head_sha: ${{ steps.validate.outputs.fork_head_sha }}
+      request_uuid: ${{ steps.validate.outputs.request_uuid }}
+      recipe_state: ${{ steps.approval.outputs.recipe_state }}
+      upstream_recipe_tree: ${{ steps.approval.outputs.upstream_recipe_tree }}
+      publisher_attempt: ${{ steps.publisher.outputs.publisher_attempt }}
+      publisher_checksum: ${{ steps.publisher.outputs.publisher_checksum }}
+      publisher_verifier_checksum: ${{ steps.publisher.outputs.publisher_verifier_checksum }}
+    steps:
+      - name: Checkout protected broker controls only
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Validate exact dispatch schema
+        id: validate
+        env:
+          DISPATCH_JSON: >-
+            {"source_tag":${{ toJSON(inputs.source_tag) }},"source_commit_sha":${{ toJSON(inputs.source_commit_sha) }},"source_workflow_head_sha":${{ toJSON(inputs.source_workflow_head_sha) }},"provider_control_sha":${{ toJSON(inputs.provider_control_sha) }},"github_release_id":${{ toJSON(inputs.github_release_id) }},"source_workflow_run_id":${{ toJSON(inputs.source_workflow_run_id) }},"release_manifest_sha256":${{ toJSON(inputs.release_manifest_sha256) }},"fork_branch":${{ toJSON(inputs.fork_branch) }},"fork_head_sha":${{ toJSON(inputs.fork_head_sha) }},"recipe_tree_sha256":${{ toJSON(inputs.recipe_tree_sha256) }},"request_uuid":${{ toJSON(inputs.request_uuid) }}}
+        run: python3 -I -S publisher/validate_dispatch.py
+
+      - name: Verify fixed source repository, immutable release, and source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          SOURCE_WORKFLOW_HEAD_SHA: ${{ steps.validate.outputs.source_workflow_head_sha }}
+          RELEASE_ID: ${{ inputs.github_release_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_workflow_run_id }}
+          SOURCE_REPOSITORY_ID: ${{ vars.SOURCE_REPOSITORY_ID }}
+          SOURCE_OWNER_ID: ${{ vars.SOURCE_OWNER_ID }}
+        run: >-
+          python3 -I -S publisher/source_run.py
+          --run-id "$SOURCE_RUN_ID"
+          --workflow-head-sha "$SOURCE_WORKFLOW_HEAD_SHA"
+          --repository-id "$SOURCE_REPOSITORY_ID"
+          --owner-id "$SOURCE_OWNER_ID"
+          --tag "$TAG"
+          --release-id "$RELEASE_ID"
+          --timeout-seconds 3600
+
+      - name: Fetch signed tag without source checkout
+        env:
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
+          TAG_FINGERPRINT: ${{ vars.SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gpg --batch --import keys/release-signing-key.asc
+          git init --bare source.git
+          git -C source.git fetch --no-tags --depth=1 https://github.com/yurirocha15/mcp-cpp-sdk.git "refs/tags/$TAG:refs/tags/$TAG"
+          git -C source.git fetch --no-tags https://github.com/yurirocha15/mcp-cpp-sdk.git "refs/heads/main:refs/heads/main"
+          test "$(git -C source.git cat-file -t "$TAG")" = tag
+          git -C source.git verify-tag --raw "$TAG" 2>verify-tag.status
+          test "$(git -C source.git rev-list -n1 "$TAG")" = "$COMMIT"
+          git -C source.git merge-base --is-ancestor "$COMMIT" refs/heads/main
+          python3 -I -S publisher/verify_git_status.py verify-tag.status "$TAG_FINGERPRINT" "$PRIMARY_FINGERPRINT"
+
+      - name: Download and verify immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
+          PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
+          ARTIFACT_FINGERPRINT: ${{ vars.SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+          gh release download "$TAG" --repo yurirocha15/mcp-cpp-sdk --dir release-assets
+          python3 -I -S publisher/verify_release_bundle.py \
+            --directory release-assets --tag "$TAG" --commit "$COMMIT" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --primary-fingerprint "$PRIMARY_FINGERPRINT" \
+            --artifact-fingerprint "$ARTIFACT_FINGERPRINT" \
+            --public-key keys/release-signing-key.asc
+
+      - name: Verify exact fork head and recipe-only tree
+        env:
+          BRANCH: ${{ steps.validate.outputs.fork_branch }}
+          HEAD_SHA: ${{ steps.validate.outputs.fork_head_sha }}
+          TREE_SHA256: ${{ inputs.recipe_tree_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --bare recipe.git
+          git -C recipe.git fetch --no-tags https://github.com/yurirocha15/conan-center-index.git "$HEAD_SHA"
+          test "$(git -C recipe.git rev-parse FETCH_HEAD)" = "$HEAD_SHA"
+          git -C recipe.git fetch --no-tags https://github.com/conan-io/conan-center-index.git \
+            "refs/heads/master:refs/heads/upstream-master"
+          git -C recipe.git diff --no-renames --name-status refs/heads/upstream-master..."$HEAD_SHA" >recipe.diff
+          git -C recipe.git archive --format=tar --prefix=recipe/ "$HEAD_SHA:recipes/mcp-cpp-sdk" >recipe.tar
+          mkdir recipe-tree
+          tar --extract --file recipe.tar --directory recipe-tree --no-same-owner --no-same-permissions
+          python3 -I -S publisher/verify_recipe_tree.py \
+            --tree recipe-tree/recipe --tag "$TAG" --tree-archive recipe.tar \
+            --tree-sha256 "$TREE_SHA256" --diff recipe.diff \
+            --release-manifest release-assets/release-manifest.json
+
+      - name: Verify authorization issue and emit complete public pre-approval summary
+        id: approval
+        env:
+          TAG: ${{ steps.validate.outputs.source_tag }}
+          COMMIT: ${{ steps.validate.outputs.source_commit_sha }}
+          BRANCH: ${{ steps.validate.outputs.fork_branch }}
+          HEAD_SHA: ${{ steps.validate.outputs.fork_head_sha }}
+          REQUEST_UUID: ${{ steps.validate.outputs.request_uuid }}
+          PACKAGE_REQUEST_ISSUE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE }}
+          PACKAGE_REQUEST_ISSUE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_ID }}
+          PACKAGE_REQUEST_ISSUE_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_CREATED_AT: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_CREATED_AT }}
+          PACKAGE_REQUEST_ISSUE_BODY_SHA256: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_BODY_SHA256 }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_ID }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE }}
+          PACKAGE_REQUEST_ISSUE_LABEL_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_ID }}
+          PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_LABEL_NAME: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NAME }}
+          UPSTREAM_REPOSITORY_ID: ${{ vars.CONAN_CENTER_UPSTREAM_REPOSITORY_ID }}
+          FORK_REPOSITORY_ID: ${{ vars.CONAN_CENTER_FORK_REPOSITORY_ID }}
+          FORK_OWNER_ID: ${{ vars.CONAN_CENTER_FORK_OWNER_ID }}
+          RELEASE_ID: ${{ inputs.github_release_id }}
+          SOURCE_RUN_ID: ${{ inputs.source_workflow_run_id }}
+          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
+          RECIPE_TREE_SHA256: ${{ inputs.recipe_tree_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api '/repos/conan-io/conan-center-index' >conan-upstream.json
+          gh api '/repos/yurirocha15/conan-center-index' >conan-fork.json
+          gh api "/repos/conan-io/conan-center-index/issues/$PACKAGE_REQUEST_ISSUE" \
+            >package-request.json
+          python3 -E -s -S publisher/approval.py \
+            --repository conan-upstream.json --repository-id "$UPSTREAM_REPOSITORY_ID" \
+            --fork-repository conan-fork.json --fork-repository-id "$FORK_REPOSITORY_ID" \
+            --fork-owner-id "$FORK_OWNER_ID" \
+            --issue package-request.json --tag "$TAG" --git-directory recipe.git \
+            --recipe-diff recipe.diff --summary "$GITHUB_STEP_SUMMARY" \
+            --github-output "$GITHUB_OUTPUT" --source-commit "$COMMIT" \
+            --release-id "$RELEASE_ID" --source-run-id "$SOURCE_RUN_ID" \
+            --manifest-sha256 "$MANIFEST_SHA256" \
+            --recipe-tree-sha256 "$RECIPE_TREE_SHA256" --fork-branch "$BRANCH" \
+            --fork-head "$HEAD_SHA" --request-uuid "$REQUEST_UUID" \
+            --number "$PACKAGE_REQUEST_ISSUE" --issue-id "$PACKAGE_REQUEST_ISSUE_ID" \
+            --node-id "$PACKAGE_REQUEST_ISSUE_NODE_ID" \
+            --created-at "$PACKAGE_REQUEST_ISSUE_CREATED_AT" \
+            --body-sha256 "$PACKAGE_REQUEST_ISSUE_BODY_SHA256" \
+            --author-id "$PACKAGE_REQUEST_ISSUE_AUTHOR_ID" \
+            --author-node-id "$PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID" \
+            --author-login "$PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN" \
+            --author-type "$PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE" \
+            --label-id "$PACKAGE_REQUEST_ISSUE_LABEL_ID" \
+            --label-node-id "$PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID" \
+            --label-name "$PACKAGE_REQUEST_ISSUE_LABEL_NAME"
+
+      - name: Prepare checksum-bound protected publisher client
+        id: publisher
+        run: >-
+          python3 -I -S publisher/client_handoff.py
+          --create-from publisher --directory publisher-client
+          --github-output "$GITHUB_OUTPUT" --run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      - name: Retain exact protected publisher client
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conan-publisher-${{ github.run_id }}-${{ github.run_attempt }}
+          path: publisher-client/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  publish:
+    name: open exact upstream ConanCenter pull request
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: conan-center-pr
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Download only this run's protected publisher client
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: conan-publisher-${{ github.run_id }}-${{ needs.verify.outputs.publisher_attempt }}
+          path: publisher-client
+
+      - name: Verify exact protected publisher client without PAT
+        env:
+          EXPECTED_CHECKSUM: ${{ needs.verify.outputs.publisher_checksum }}
+          EXPECTED_VERIFIER_CHECKSUM: ${{ needs.verify.outputs.publisher_verifier_checksum }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -L publisher-client/client_handoff.py
+          test "$(sha256sum publisher-client/client_handoff.py | cut -d' ' -f1)" = \
+            "$EXPECTED_VERIFIER_CHECKSUM"
+          python3 -I -S publisher-client/client_handoff.py --directory publisher-client
+          test "$(sha256sum publisher-client/SHA256SUMS | cut -d' ' -f1)" = "$EXPECTED_CHECKSUM"
+
+      - name: Fixed-route PAT client
+        env:
+          CONAN_CENTER_PR_BOT_PAT: ${{ secrets.CONAN_CENTER_PR_BOT_PAT }}
+          SOURCE_TAG: ${{ needs.verify.outputs.source_tag }}
+          SOURCE_COMMIT_SHA: ${{ needs.verify.outputs.source_commit_sha }}
+          FORK_BRANCH: ${{ needs.verify.outputs.fork_branch }}
+          FORK_HEAD_SHA: ${{ needs.verify.outputs.fork_head_sha }}
+          REQUEST_UUID: ${{ needs.verify.outputs.request_uuid }}
+          BOT_USER_ID: ${{ vars.CONAN_CENTER_PR_BOT_USER_ID }}
+          PACKAGE_REQUEST_ISSUE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE }}
+          PACKAGE_REQUEST_ISSUE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_ID }}
+          PACKAGE_REQUEST_ISSUE_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_CREATED_AT: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_CREATED_AT }}
+          PACKAGE_REQUEST_ISSUE_BODY_SHA256: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_BODY_SHA256 }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_ID }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN }}
+          PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE }}
+          PACKAGE_REQUEST_ISSUE_LABEL_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_ID }}
+          PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID }}
+          PACKAGE_REQUEST_ISSUE_LABEL_NAME: ${{ vars.CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NAME }}
+          UPSTREAM_REPOSITORY_ID: ${{ vars.CONAN_CENTER_UPSTREAM_REPOSITORY_ID }}
+          FORK_REPOSITORY_ID: ${{ vars.CONAN_CENTER_FORK_REPOSITORY_ID }}
+          FORK_OWNER_ID: ${{ vars.CONAN_CENTER_FORK_OWNER_ID }}
+          RECIPE_STATE: ${{ needs.verify.outputs.recipe_state }}
+          UPSTREAM_RECIPE_TREE: ${{ needs.verify.outputs.upstream_recipe_tree }}
+        shell: bash
+        run: python3 -I -S publisher-client/create_pull.py
