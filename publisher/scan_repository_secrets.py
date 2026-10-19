@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject tracked private keys and GitHub or ConanCenter credentials."""
+"""Reject tracked private keys and GitHub credentials."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ SENSITIVE_PATTERN = re.compile(
         (
             rb"BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE" rb" KEY",
             rb"gh[pousr]_[A-Za-z0-9_]{20,}",
-            rb"CONAN_CENTER_PR_BOT_PA" rb"T=",
         )
     )
 )

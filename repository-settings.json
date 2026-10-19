@@ -21,6 +21,7 @@
         "require_full_sha": true,
         "allowed_actions": {
             "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
             "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
             "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
         },
@@ -66,32 +67,29 @@
         "asset_inventory": []
     },
     "environment": {
-        "name": "conan-center-pr",
+        "name": "conan-fork-push",
         "required_reviewer_count": 1,
         "prevent_self_review": false,
         "administrator_bypass": false,
         "deployment_tag": "release-control-v1",
-        "wait_timer_minutes": 10,
         "secrets": [
-            "CONAN_CENTER_PR_BOT_PAT"
+            "CONAN_FORK_APP_PRIVATE_KEY"
         ],
         "variables": [
-            "CONAN_CENTER_PR_BOT_USER_ID"
+            "CONAN_FORK_APP_CLIENT_ID"
         ]
     },
+    "publisher_app": {
+        "installation_repositories": [
+            "yurirocha15/conan-center-index"
+        ],
+        "permissions": {
+            "metadata": "read",
+            "contents": "write",
+            "all_other_permissions": "none"
+        }
+    },
     "repository_variables": [
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_NODE_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_CREATED_AT",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_BODY_SHA256",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_NODE_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_LOGIN",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_AUTHOR_TYPE",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NODE_ID",
-        "CONAN_CENTER_PACKAGE_REQUEST_ISSUE_LABEL_NAME",
         "CONAN_CENTER_FORK_REPOSITORY_ID",
         "CONAN_CENTER_FORK_OWNER_ID",
         "CONAN_CENTER_UPSTREAM_REPOSITORY_ID",
@@ -102,7 +100,6 @@
         "SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT"
     ],
     "workflow_constants": {
-        "bot_login": "mcp-cpp-sdk-release-bot",
         "source_repository": "yurirocha15/mcp-cpp-sdk",
         "fork_repository": "yurirocha15/conan-center-index",
         "upstream_repository": "conan-io/conan-center-index",

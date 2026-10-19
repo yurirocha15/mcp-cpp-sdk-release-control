@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 from pathlib import Path
 import re
@@ -38,60 +37,56 @@ class SecurityPolicyTests(unittest.TestCase):
                 self.assertIsNotNone(match, line)
                 self.assertEqual(allowed.get(match.group(1)), match.group(2))
 
-    def test_pat_is_in_one_final_no_checkout_step(self) -> None:
-        publish = self.workflow.split("\n  publish:\n", 1)[1]
-        self.assertNotIn("actions/checkout", publish)
-        self.assertEqual(publish.count("      - name:"), 3)
-        self.assertEqual(publish.count("secrets.CONAN_CENTER_PR_BOT_PAT"), 1)
-        self.assertTrue(
-            publish.rstrip().endswith("run: python3 -I -S publisher-client/create_pull.py")
-        )
-        secret = publish.index("secrets.CONAN_CENTER_PR_BOT_PAT")
-        self.assertLess(
-            publish.index("client_handoff.py --directory publisher-client"), secret
-        )
-
-    def test_extracted_client_is_valid_stdlib_python(self) -> None:
-        source = (ROOT / "publisher/create_pull.py").read_text()
-        tree = ast.parse(source)
-        imports = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imports.add(node.module.split(".")[0])
+    def test_fork_credential_is_confined_to_the_protected_push_job(self) -> None:
+        verify, push = self.workflow.split("\n  push:\n", 1)
+        self.assertNotIn("secrets.", verify)
+        self.assertNotIn("environment:", verify)
+        self.assertIn("    environment: conan-fork-push\n", push)
+        self.assertEqual(push.count("secrets.CONAN_FORK_APP_PRIVATE_KEY"), 1)
+        token = push.split("actions/create-github-app-token@", 1)[1].split("      - name:", 1)[0]
+        self.assertIn("          repositories: conan-center-index\n", token)
         self.assertEqual(
-            imports,
-            {
-                "__future__",
-                "collections",
-                "dataclasses",
-                "http",
-                "importlib",
-                "json",
-                "os",
-                "pathlib",
-                "re",
-                "sys",
-                "types",
-                "urllib",
-                "uuid",
-            },
+            [line.strip() for line in token.splitlines() if "permission-" in line],
+            ["permission-contents: write"],
         )
-        self.assertIn('API_HOST = "api.github.com"', source)
+        self.assertTrue(
+            push.rstrip().endswith('--summary "${GITHUB_STEP_SUMMARY}"')
+            and "python3 -I -S publisher/push_recipe.py" in push
+        )
 
-    def test_polling_issue_binding_and_handoff_are_bounded(self) -> None:
-        self.assertIn("timeout-minutes: 75", self.workflow)
-        self.assertIn("--timeout-seconds 3600", self.workflow)
+    def test_dispatch_inputs_match_the_validated_contract(self) -> None:
+        from publisher.validate_dispatch import FIELDS
+
+        inputs = self.workflow.split("    inputs:\n", 1)[1].split("\npermissions:", 1)[0]
+        declared = re.findall(r"(?m)^      ([a-z0-9_]+):$", inputs)
+        self.assertEqual(tuple(declared), FIELDS)
+        self.assertEqual(self.workflow.count("required: true"), len(FIELDS))
+
+    def test_jobs_run_only_the_immutable_control_code(self) -> None:
+        self.assertIn("test \"${GITHUB_REF}\" = refs/tags/release-control-v1", self.workflow)
+        self.assertEqual(
+            self.workflow.count("ref: ${{ inputs.provider_control_sha }}")
+            + self.workflow.count("ref: ${{ needs.verify.outputs.provider_control_sha }}"),
+            2,
+        )
         self.assertNotIn("python3 -I -S <<", self.workflow)
-        self.assertIn("retention-days: 90", self.workflow)
-        self.assertIn("PACKAGE_REQUEST_ISSUE_BODY_SHA256", self.workflow)
-        client = (ROOT / "publisher/create_pull.py").read_text()
-        self.assertLess(
-            client.index('"recheck-package-request"'),
-            client.index('"create-pull"'),
-        )
+        self.assertEqual(self.workflow.count("persist-credentials: false"), 2)
 
+    def test_settings_declare_the_fork_app_boundary(self) -> None:
+        environment = self.manifest["environment"]
+        self.assertEqual(environment["name"], "conan-fork-push")
+        self.assertEqual(environment["deployment_tag"], "release-control-v1")
+        self.assertEqual(environment["secrets"], ["CONAN_FORK_APP_PRIVATE_KEY"])
+        self.assertEqual(environment["variables"], ["CONAN_FORK_APP_CLIENT_ID"])
+        self.assertEqual(
+            self.manifest["publisher_app"]["installation_repositories"],
+            ["yurirocha15/conan-center-index"],
+        )
+        for variable in re.findall(r"vars\.([A-Z0-9_]+)", self.workflow):
+            self.assertIn(
+                variable,
+                self.manifest["repository_variables"] + environment["variables"],
+            )
 
 if __name__ == "__main__":
     unittest.main()
