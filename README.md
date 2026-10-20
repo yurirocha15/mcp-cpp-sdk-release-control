@@ -1,33 +1,31 @@
 # mcp-cpp-sdk ConanCenter release control
 
-This public repository is the hardened approval broker for opening one
-ConanCenter recipe pull request. It is not a general GitHub API proxy.
+This public repository turns one signed, immutable mcp-cpp-sdk GitHub Release
+into a ConanCenter recipe branch on
+[`yurirocha15/conan-center-index`](https://github.com/yurirocha15/conan-center-index).
+The maintainer opens the ConanCenter pull request from that branch; this
+repository holds no credential for `conan-io/conan-center-index`.
 
-The dispatch accepts exactly eleven bounded strings. Public verification polls a
-manual source release for up to one hour, then verifies the immutable release,
-recipe tree, and exact open upstream authorization issue before the protected
-environment. The protected publisher client is transferred in an
-attempt-specific, checksum-bound artifact retained for 90 days. The PAT job
-does not checkout or execute source or recipe content, and exposes the PAT only
-to its final fixed-route standard-library client step.
+The source release workflow dispatches `conan-center-pr.yml` through the
+asset-free immutable GitHub Release tag `release-control-v1` with eight bounded
+inputs. The first job holds no credential. It requires that exact tag, its
+commit, and the tagged workflow identity, then verifies the source repository,
+the completed source run, the immutable release, every signed asset, the
+signed publication contract, and the OpenPGP-signed source tag.
 
-The final client only performs fixed GitHub API GETs and, when no identical PR
-exists, one fixed POST to `conan-io/conan-center-index`. Immediately before
-that POST it rechecks the exact issue number, IDs, author, creation time, body
-digest, `library request` label, title, and open state, then snapshots the
-upstream recipe tree as the final read. The returned PR must use that exact base
-commit. It rejects redirects, pagination, oversized bodies, ambiguous PRs,
-identity mismatches, recovery branch misuse, and every caller-supplied URL. PR
-titles and bodies follow the current ConanCenter contribution templates for new
-recipes and later versions.
+From the signed recipe inputs it assembles `recipes/mcp-cpp-sdk` on the
+current upstream `master`. A first submission reproduces the recipe tree that
+the source release validated. A later version is added to the upstream recipe
+only when that recipe still has the exact layout written here; anything else
+fails closed for manual resolution.
 
-Publishing is dispatched only through the asset-free immutable GitHub Release
-tag `release-control-v1`. A credential-free first job requires that exact tag,
-its immutable commit SHA supplied by the source preflight, and the exact tagged
-workflow identity. The protected environment accepts only that tag; the tag
-ruleset blocks updates and deletion without bypass actors.
+The second job runs in the protected `conan-fork-push` environment, which
+accepts only the control tag. It uses a GitHub App installed only on the fork
+with contents write to create a single commit on the verified upstream base
+and a `package/mcp-cpp-sdk-<version>` branch. It reads the branch back,
+accepts an existing branch only when it already holds the identical recipe,
+and ends with a compare link that prefills the ConanCenter pull request.
 
 `repository-settings.json` names the required public controls, checks,
-variables, and secret without storing operator identities, numeric IDs,
-fingerprints, or provisioning evidence. Operational setup remains outside this
-tracked repository.
+variables, secret, and App grant without storing operator identities, numeric
+IDs, fingerprints, or provisioning evidence.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and normalize the broker's fixed workflow_dispatch contract."""
+"""Validate the trusted Conan control workflow's exact dispatch contract."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 
 FIELDS = (
@@ -19,68 +19,91 @@ FIELDS = (
     "github_release_id",
     "source_workflow_run_id",
     "release_manifest_sha256",
-    "fork_branch",
-    "fork_head_sha",
-    "recipe_tree_sha256",
     "request_uuid",
 )
-STABLE_TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-DECIMAL = re.compile(r"0|[1-9][0-9]*")
+DECIMAL = re.compile(r"[1-9][0-9]*")
+SOURCE_REPOSITORY = "yurirocha15/mcp-cpp-sdk"
+PUBLISHER_REPOSITORY = "yurirocha15/mcp-cpp-sdk-release-control"
+CONTROL_TAG = "release-control-v1"
+WORKFLOW = "conan-center-pr.yml"
+
+
+def expected_request_uuid(source_tag: str, manifest_sha256: str) -> str:
+    """Return the source dispatcher's deterministic Conan request identity."""
+
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"{SOURCE_REPOSITORY}:{source_tag}:{manifest_sha256}:conan2",
+        )
+    )
 
 
 def validate(value: object) -> dict[str, str]:
     if not isinstance(value, dict) or set(value) != set(FIELDS):
         raise ValueError("dispatch must contain exactly the approved fields")
-    normalized: dict[str, str] = {}
+    result: dict[str, str] = {}
     for field in FIELDS:
         item = value[field]
         if not isinstance(item, str) or not item or len(item) > 160:
             raise ValueError(f"{field} is not a bounded non-empty string")
         if any(character.isspace() or ord(character) < 0x20 for character in item):
             raise ValueError(f"{field} contains whitespace or control characters")
-        normalized[field] = item
-
-    match = STABLE_TAG.fullmatch(normalized["source_tag"])
-    if match is None:
+        result[field] = item
+    if TAG.fullmatch(result["source_tag"]) is None:
         raise ValueError("source_tag is not a canonical stable tag")
-    version = normalized["source_tag"][1:]
-    expected_branch = f"package/mcp-cpp-sdk-{version}"
-    recovery = re.compile(re.escape(expected_branch) + r"-r[1-9][0-9]*")
-    if normalized["fork_branch"] != expected_branch and recovery.fullmatch(normalized["fork_branch"]) is None:
-        raise ValueError("fork_branch does not match source_tag")
     for field in (
         "source_commit_sha",
         "source_workflow_head_sha",
         "provider_control_sha",
-        "fork_head_sha",
     ):
-        if SHA.fullmatch(normalized[field]) is None:
+        if SHA.fullmatch(result[field]) is None:
             raise ValueError(f"{field} is not a lowercase full commit SHA")
-    for field in ("release_manifest_sha256", "recipe_tree_sha256"):
-        if DIGEST.fullmatch(normalized[field]) is None:
-            raise ValueError(f"{field} is not a lowercase SHA-256")
+    if DIGEST.fullmatch(result["release_manifest_sha256"]) is None:
+        raise ValueError("release_manifest_sha256 is not canonical")
     for field in ("github_release_id", "source_workflow_run_id"):
-        if DECIMAL.fullmatch(normalized[field]) is None:
-            raise ValueError(f"{field} is not a canonical decimal ID")
+        if DECIMAL.fullmatch(result[field]) is None:
+            raise ValueError(f"{field} is not a positive canonical decimal")
     try:
-        request_id = UUID(normalized["request_uuid"])
+        request_id = UUID(result["request_uuid"])
     except ValueError as error:
         raise ValueError("request_uuid is invalid") from error
-    if str(request_id) != normalized["request_uuid"]:
+    if str(request_id) != result["request_uuid"]:
         raise ValueError("request_uuid is not canonical lowercase")
-    return normalized
+    if result["request_uuid"] != expected_request_uuid(
+        result["source_tag"], result["release_manifest_sha256"]
+    ):
+        raise ValueError("request_uuid does not bind the exact Conan request")
+    return result
+
+
+def validate_execution_context(value: dict[str, str], environment: dict[str, str]) -> None:
+    """Bind the request to this repository's immutable control workflow."""
+
+    expected = {
+        "GITHUB_REPOSITORY": PUBLISHER_REPOSITORY,
+        "GITHUB_REF": f"refs/tags/{CONTROL_TAG}",
+        "GITHUB_SHA": value["provider_control_sha"],
+        "GITHUB_WORKFLOW_REF": (
+            f"{PUBLISHER_REPOSITORY}/.github/workflows/{WORKFLOW}"
+            f"@refs/tags/{CONTROL_TAG}"
+        ),
+    }
+    for name, expected_value in expected.items():
+        if environment.get(name) != expected_value:
+            raise ValueError(f"{name} does not match immutable provider control")
 
 
 def main() -> int:
     try:
-        request = json.loads(os.environ["DISPATCH_JSON"])
-        normalized = validate(request)
-        output_path = Path(os.environ["GITHUB_OUTPUT"])
-        with output_path.open("a", encoding="utf-8") as output:
+        value = validate(json.loads(os.environ["DISPATCH_JSON"]))
+        validate_execution_context(value, os.environ)
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
             for field in FIELDS:
-                output.write(f"{field}={normalized[field]}\n")
+                output.write(f"{field}={value[field]}\n")
     except (KeyError, OSError, json.JSONDecodeError, ValueError) as error:
         print(f"validate-dispatch: {error}", file=sys.stderr)
         return 2

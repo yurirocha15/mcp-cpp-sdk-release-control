@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import hashlib
 from pathlib import Path
 import json
 import re
@@ -23,7 +22,6 @@ ALLOWED_NAMES = {
 ALLOWED_SUFFIXES = {".patch", ".py", ".txt", ".yml", ".yaml", ".cmake", ".cpp", ".hpp"}
 TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-RECIPE_PREFIX = "recipes/mcp-cpp-sdk/"
 
 
 def _declared_requirements(conanfile: Path) -> list[str]:
@@ -65,10 +63,17 @@ def verify(
         raise ValueError("recipe tree has no conanfile.py")
     if not any("test_package" in path.parts and path.name == "conanfile.py" for path in files):
         raise ValueError("recipe tree has no test_package/conanfile.py")
+    config = (root / "config.yml").read_text(encoding="utf-8")
+    if not config.startswith(f'versions:\n  "{version}":\n    folder: all\n'):
+        raise ValueError("config.yml does not list this release as its newest version")
+    conandata = (root / "all/conandata.yml").read_text(encoding="utf-8")
+    if not conandata.startswith(
+        f'sources:\n  "{version}":\n    url: "{source_url}"\n    sha256: "{source_sha256}"\n'
+    ):
+        raise ValueError("conandata.yml does not bind this release's signed source archive")
     combined = "\n".join(path.read_text(encoding="utf-8") for path in files)
-    for required in (version, source_url, source_sha256, "license"):
-        if required not in combined:
-            raise ValueError(f"recipe tree does not bind required release value: {required}")
+    if "license" not in combined:
+        raise ValueError("recipe tree declares no license")
     if "http://" in combined:
         raise ValueError("recipe tree contains an insecure source URL")
     manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
@@ -89,14 +94,6 @@ def verify(
     recipe_requirements = _declared_requirements(root / "all/conanfile.py")
     if recipe_requirements != requirements:
         raise ValueError("recipe requirements differ from the signed exact requirement set")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _source_identity(manifest: object, tag: str) -> tuple[str, str, str]:
@@ -123,30 +120,9 @@ def _source_identity(manifest: object, tag: str) -> tuple[str, str, str]:
     return version, url, matches[0]["sha256"]
 
 
-def verify_handoff(
-    root: Path,
-    *,
-    tag: str,
-    tree_archive: Path,
-    tree_sha256: str,
-    diff: Path,
-    release_manifest: Path,
-) -> None:
-    """Verify the fetched fork tree, diff boundary, and signed source binding."""
+def verify_assembled(root: Path, *, tag: str, release_manifest: Path) -> None:
+    """Verify an assembled recipe folder against the signed source identity."""
 
-    if DIGEST.fullmatch(tree_sha256) is None or _sha256(tree_archive) != tree_sha256:
-        raise ValueError("recipe tree archive digest does not match the dispatch")
-    changed: list[str] = []
-    for line in diff.read_text(encoding="utf-8").splitlines():
-        fields = line.split("\t")
-        if len(fields) != 2 or fields[0] not in {"A", "D", "M"}:
-            raise ValueError("recipe diff contains a malformed or renamed entry")
-        path = fields[1]
-        if not path.startswith(RECIPE_PREFIX) or path == RECIPE_PREFIX:
-            raise ValueError("fork changes files outside the package recipe")
-        changed.append(path)
-    if not changed or len(changed) != len(set(changed)):
-        raise ValueError("recipe diff is empty or duplicated")
     manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
     version, source_url, source_sha256 = _source_identity(manifest, tag)
     verify(
@@ -162,20 +138,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tree", type=Path, required=True)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--tree-archive", type=Path, required=True)
-    parser.add_argument("--tree-sha256", required=True)
-    parser.add_argument("--diff", type=Path, required=True)
     parser.add_argument("--release-manifest", type=Path, required=True)
     args = parser.parse_args()
     try:
-        verify_handoff(
-            args.tree,
-            tag=args.tag,
-            tree_archive=args.tree_archive,
-            tree_sha256=args.tree_sha256,
-            diff=args.diff,
-            release_manifest=args.release_manifest,
-        )
+        verify_assembled(args.tree, tag=args.tag, release_manifest=args.release_manifest)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"verify-recipe-tree: {error}", file=sys.stderr)
         return 2
