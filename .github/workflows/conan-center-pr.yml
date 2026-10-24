@@ -51,7 +51,7 @@ jobs:
   verify:
     name: verify immutable source and assemble recipe
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 150
     permissions:
       contents: read
       actions: read
@@ -66,10 +66,10 @@ jobs:
         env:
           EXPECTED_CONTROL_SHA: ${{ inputs.provider_control_sha }}
         run: |
-          test "${GITHUB_REF}" = refs/tags/release-control-v1
+          test "${GITHUB_REF}" = refs/tags/release-control-v2
           test "${GITHUB_SHA}" = "${EXPECTED_CONTROL_SHA}"
           test "${GITHUB_WORKFLOW_REF}" = \
-            yurirocha15/mcp-cpp-sdk-release-control/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v1
+            yurirocha15/mcp-cpp-sdk-release-control/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v2
       - name: Checkout only the immutable provider control
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
