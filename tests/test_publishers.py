@@ -56,13 +56,13 @@ def dispatch() -> dict[str, str]:
     }
 
 
-def control_context(ref: str = "refs/tags/release-control-v1") -> dict[str, str]:
+def control_context(ref: str = "refs/tags/release-control-v2") -> dict[str, str]:
     return {
         "GITHUB_REPOSITORY": CONTROL_REPOSITORY,
         "GITHUB_REF": ref,
         "GITHUB_SHA": CONTROL_SHA,
         "GITHUB_WORKFLOW_REF": (
-            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v1"
+            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v2"
         ),
     }
 
@@ -148,6 +148,91 @@ class SourceStateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "workflow run"):
             self.verify(self.api(SOURCE_SHA))
 
+    def polling_api(self, statuses, error=None):
+        base = self.api()
+        endpoint = "repos/yurirocha15/mcp-cpp-sdk/actions/runs/40"
+        pending = list(statuses)
+
+        def api(path: str):
+            if path != endpoint:
+                return base(path)
+            status = pending.pop(0)
+            if isinstance(status, Exception):
+                raise status
+            run = dict(base(path))
+            if status != "completed":
+                run.update(status=status, conclusion=None)
+            return run
+
+        api.remaining = pending
+        return api
+
+    def test_waits_up_to_two_hours_for_gated_source_run(self) -> None:
+        import subprocess
+
+        from publisher import verify_source_state as module
+
+        self.assertEqual(module.POLL_INTERVAL_SECONDS, 30)
+        self.assertEqual(module.MAX_POLL_ATTEMPTS, 240)
+        sleeps: list[float] = []
+        api = self.polling_api(
+            ["queued", "in_progress", "waiting", "pending"] * 50
+            + [subprocess.CalledProcessError(1, "gh")]
+            + ["completed"]
+        )
+        verify_source_state(
+            api,
+            source_repository_id=10,
+            source_owner_id=20,
+            source_tag="v0.2.0",
+            source_workflow_head_sha=WORKFLOW_SHA,
+            github_release_id=30,
+            source_workflow_run_id=40,
+            sleeper=sleeps.append,
+        )
+        self.assertEqual(len(sleeps), 201)
+        self.assertEqual(set(sleeps), {30})
+
+    def test_gives_up_after_two_hours_without_completion(self) -> None:
+        sleeps: list[float] = []
+        api = self.polling_api(["in_progress"] * 240)
+        with self.assertRaisesRegex(ValueError, "workflow run"):
+            verify_source_state(
+                api,
+                source_repository_id=10,
+                source_owner_id=20,
+                source_tag="v0.2.0",
+                source_workflow_head_sha=WORKFLOW_SHA,
+                github_release_id=30,
+                source_workflow_run_id=40,
+                sleeper=sleeps.append,
+            )
+        self.assertEqual(len(sleeps), 239)
+        self.assertEqual(sum(sleeps), 239 * 30)
+        self.assertEqual(api.remaining, [])
+
+    def test_repeated_api_failures_abort_polling(self) -> None:
+        import subprocess
+
+        api = self.polling_api([subprocess.CalledProcessError(1, "gh")] * 5)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.verify(api)
+
+    def test_rejects_unknown_status_and_excess_attempts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid status"):
+            self.verify(self.polling_api(["bogus"]))
+        with self.assertRaisesRegex(ValueError, "attempt count"):
+            verify_source_state(
+                self.api(),
+                source_repository_id=10,
+                source_owner_id=20,
+                source_tag="v0.2.0",
+                source_workflow_head_sha=WORKFLOW_SHA,
+                github_release_id=30,
+                source_workflow_run_id=40,
+                attempts=241,
+            )
+
 
 def contract(control_sha: str = CONTROL_SHA, requirements=REQUIREMENTS) -> dict[str, object]:
     return {
@@ -167,7 +252,7 @@ def contract(control_sha: str = CONTROL_SHA, requirements=REQUIREMENTS) -> dict[
             "chocolatey": {},
             "conan": {
                 "repository": CONTROL_REPOSITORY,
-                "control_tag": "release-control-v1",
+                "control_tag": "release-control-v2",
                 "control_commit": control_sha,
                 "workflow": "conan-center-pr.yml",
             },

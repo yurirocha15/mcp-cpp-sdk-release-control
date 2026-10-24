@@ -15,6 +15,9 @@ from urllib.parse import quote
 
 SOURCE_REPOSITORY = "yurirocha15/mcp-cpp-sdk"
 SOURCE_WORKFLOW = ".github/workflows/release.yml"
+POLL_INTERVAL_SECONDS = 30
+MAX_POLL_ATTEMPTS = 240  # 2 hours: the source run holds approval-gated jobs
+MAX_CONSECUTIVE_API_FAILURES = 5
 SHA = re.compile(r"[0-9a-f]{40}")
 DECIMAL = re.compile(r"[1-9][0-9]*")
 
@@ -75,7 +78,7 @@ def verify(
     source_workflow_head_sha: str,
     github_release_id: int,
     source_workflow_run_id: int,
-    attempts: int = 30,
+    attempts: int = MAX_POLL_ATTEMPTS,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> None:
     """Fail unless live public state proves the exact immutable source handoff."""
@@ -84,7 +87,7 @@ def verify(
         raise ValueError("GitHub numeric identities must be positive")
     if SHA.fullmatch(source_workflow_head_sha) is None:
         raise ValueError("source workflow head is not a full commit SHA")
-    if attempts < 1 or attempts > 30:
+    if attempts < 1 or attempts > MAX_POLL_ATTEMPTS:
         raise ValueError("source run polling attempt count is invalid")
 
     repository = _mapping(api(f"repos/{SOURCE_REPOSITORY}"), "source repository")
@@ -114,15 +117,26 @@ def verify(
 
     endpoint = f"repos/{SOURCE_REPOSITORY}/actions/runs/{source_workflow_run_id}"
     run: Mapping[str, object] = {}
+    failures = 0
     for attempt in range(attempts):
-        run = _mapping(api(endpoint), "source workflow run")
+        try:
+            run = _mapping(api(endpoint), "source workflow run")
+        except (OSError, subprocess.SubprocessError):
+            # A multi-hour wait must survive a transient API or network error.
+            failures += 1
+            if failures >= MAX_CONSECUTIVE_API_FAILURES:
+                raise
+            run = {}
+            sleeper(POLL_INTERVAL_SECONDS)
+            continue
+        failures = 0
         status = run.get("status")
         if status == "completed":
             break
-        if status not in {"queued", "in_progress"}:
+        if status not in {"queued", "in_progress", "waiting", "requested", "pending"}:
             raise ValueError("source workflow run has an invalid status")
         if attempt + 1 < attempts:
-            sleeper(10)
+            sleeper(POLL_INTERVAL_SECONDS)
     repository_state = _mapping(run.get("repository"), "source run repository")
     if (
         run.get("id") != source_workflow_run_id
