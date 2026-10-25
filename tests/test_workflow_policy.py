@@ -63,7 +63,7 @@ class SecurityPolicyTests(unittest.TestCase):
         self.assertEqual(self.workflow.count("required: true"), len(FIELDS))
 
     def test_jobs_run_only_the_immutable_control_code(self) -> None:
-        self.assertIn("test \"${GITHUB_REF}\" = refs/tags/release-control-v2", self.workflow)
+        self.assertIn("test \"${GITHUB_REF}\" = refs/tags/release-control-v3", self.workflow)
         self.assertEqual(
             self.workflow.count("ref: ${{ inputs.provider_control_sha }}")
             + self.workflow.count("ref: ${{ needs.verify.outputs.provider_control_sha }}"),
@@ -84,7 +84,7 @@ class SecurityPolicyTests(unittest.TestCase):
     def test_settings_declare_the_fork_app_boundary(self) -> None:
         environment = self.manifest["environment"]
         self.assertEqual(environment["name"], "conan-fork-push")
-        self.assertEqual(environment["deployment_tag"], "release-control-v2")
+        self.assertEqual(environment["deployment_tag"], "release-control-v3")
         self.assertEqual(environment["secrets"], ["CONAN_FORK_APP_PRIVATE_KEY"])
         self.assertEqual(environment["variables"], ["CONAN_FORK_APP_CLIENT_ID"])
         self.assertEqual(
