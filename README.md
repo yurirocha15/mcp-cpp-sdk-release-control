@@ -7,7 +7,7 @@ The maintainer opens the ConanCenter pull request from that branch; this
 repository holds no credential for `conan-io/conan-center-index`.
 
 The source release workflow dispatches `conan-center-pr.yml` through the
-asset-free immutable GitHub Release tag `release-control-v2` with eight bounded
+asset-free immutable GitHub Release tag `release-control-v3` with eight bounded
 inputs. The first job holds no credential. It requires that exact tag, its
 commit, and the tagged workflow identity, then verifies the source repository,
 the completed source run (polled every 30 seconds for up to 2 hours,

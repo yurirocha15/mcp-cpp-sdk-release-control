@@ -56,13 +56,13 @@ def dispatch() -> dict[str, str]:
     }
 
 
-def control_context(ref: str = "refs/tags/release-control-v2") -> dict[str, str]:
+def control_context(ref: str = "refs/tags/release-control-v3") -> dict[str, str]:
     return {
         "GITHUB_REPOSITORY": CONTROL_REPOSITORY,
         "GITHUB_REF": ref,
         "GITHUB_SHA": CONTROL_SHA,
         "GITHUB_WORKFLOW_REF": (
-            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v2"
+            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v3"
         ),
     }
 
@@ -252,7 +252,7 @@ def contract(control_sha: str = CONTROL_SHA, requirements=REQUIREMENTS) -> dict[
             "chocolatey": {},
             "conan": {
                 "repository": CONTROL_REPOSITORY,
-                "control_tag": "release-control-v2",
+                "control_tag": "release-control-v3",
                 "control_commit": control_sha,
                 "workflow": "conan-center-pr.yml",
             },
