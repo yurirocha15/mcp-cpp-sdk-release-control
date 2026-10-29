@@ -47,6 +47,21 @@ class Response:
     value: object
 
 
+def check_route(path: str) -> None:
+    """Allow only repository API routes without empty or dot path segments.
+
+    Compare routes such as ``compare/master...owner:repo:branch`` contain
+    ``...`` inside a segment, so only whole ``.`` and ``..`` segments are refused.
+    """
+
+    segments = path.split("/")
+    if (
+        segments[:2] != ["", "repos"]
+        or any(segment in ("", ".", "..") for segment in segments[1:])
+    ):
+        raise PushError("GitHub API route is outside the fixed repository API")
+
+
 class Client:
     def __init__(self, token: str) -> None:
         if not token or len(token) > 8192 or any(c.isspace() for c in token):
@@ -60,8 +75,7 @@ class Client:
         expected: set[int],
         body: Mapping[str, object] | None = None,
     ) -> Response:
-        if not path.startswith("/repos/") or "//" in path or ".." in path:
-            raise PushError("GitHub API route is outside the fixed repository API")
+        check_route(path)
         encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
         headers = {
             "Accept": "application/vnd.github+json",

@@ -6,13 +6,13 @@ into a ConanCenter recipe branch on
 The maintainer opens the ConanCenter pull request from that branch; this
 repository holds no credential for `conan-io/conan-center-index`.
 
-The source release workflow dispatches `conan-center-pr.yml` through the
-asset-free immutable GitHub Release tag `release-control-v3` with eight bounded
-inputs. The first job holds no credential. It requires that exact tag, its
-commit, and the tagged workflow identity, then verifies the source repository,
-the completed source run (polled every 30 seconds for up to 2 hours,
-because that run holds approval-gated jobs), the immutable release, every signed asset, the
-signed publication contract, and the OpenPGP-signed source tag.
+The source release workflow dispatches `conan-center-pr.yml` on protected
+`main` with eight bounded inputs. The first job holds no credential. It requires
+`main`, the exact commit the source dispatched, and that workflow identity, then
+verifies the source repository, the completed source run (polled every 30
+seconds for up to 2 hours, because that run holds approval-gated jobs), the
+immutable release, every signed asset, the signed publication contract, and the
+OpenPGP-signed source tag.
 
 From the signed recipe inputs it assembles `recipes/mcp-cpp-sdk` on the
 current upstream `master`. A first submission reproduces the recipe tree that

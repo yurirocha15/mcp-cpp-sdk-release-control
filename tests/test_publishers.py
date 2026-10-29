@@ -12,6 +12,7 @@ from publisher.assemble_recipe import assemble, tree_sha256
 from publisher.push_recipe import (
     PushError,
     Response,
+    check_route,
     compare_link,
     git_tree_sha,
     pull_body,
@@ -56,14 +57,15 @@ def dispatch() -> dict[str, str]:
     }
 
 
-def control_context(ref: str = "refs/tags/release-control-v3") -> dict[str, str]:
+def control_context(**overrides: str) -> dict[str, str]:
     return {
         "GITHUB_REPOSITORY": CONTROL_REPOSITORY,
-        "GITHUB_REF": ref,
+        "GITHUB_REF": "refs/heads/main",
         "GITHUB_SHA": CONTROL_SHA,
         "GITHUB_WORKFLOW_REF": (
-            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/tags/release-control-v3"
+            f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml@refs/heads/main"
         ),
+        **overrides,
     }
 
 
@@ -88,14 +90,22 @@ class DispatchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate({**request, "fork_branch": "package/mcp-cpp-sdk-0.2.0"})
 
-    def test_rejects_rc_arbitrary_uuid_and_main_execution(self) -> None:
+    def test_rejects_rc_arbitrary_uuid_and_other_execution_contexts(self) -> None:
         request = dispatch()
         with self.assertRaisesRegex(ValueError, "stable"):
             validate({**request, "source_tag": "v0.2.0-rc.1"})
         with self.assertRaisesRegex(ValueError, "does not bind"):
             validate({**request, "request_uuid": "00000000-0000-0000-0000-000000000001"})
-        with self.assertRaisesRegex(ValueError, "GITHUB_REF"):
-            validate_execution_context(request, control_context("refs/heads/main"))
+        workflow = f"{CONTROL_REPOSITORY}/.github/workflows/conan-center-pr.yml"
+        for name, value in (
+            ("GITHUB_REF", "refs/tags/release-control-v3"),
+            ("GITHUB_REF", "refs/heads/feature"),
+            ("GITHUB_SHA", SOURCE_SHA),
+            ("GITHUB_WORKFLOW_REF", f"{workflow}@refs/heads/feature"),
+            ("GITHUB_REPOSITORY", "yurirocha15/other"),
+        ):
+            with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                validate_execution_context(request, control_context(**{name: value}))
 
 
 class SourceStateTests(unittest.TestCase):
@@ -234,7 +244,7 @@ class SourceStateTests(unittest.TestCase):
             )
 
 
-def contract(control_sha: str = CONTROL_SHA, requirements=REQUIREMENTS) -> dict[str, object]:
+def contract(requirements=REQUIREMENTS) -> dict[str, object]:
     return {
         "schema_version": 1,
         "native_targets": [],
@@ -247,16 +257,6 @@ def contract(control_sha: str = CONTROL_SHA, requirements=REQUIREMENTS) -> dict[
             "conan_control": {"repository": CONTROL_REPOSITORY, "repository_id": "60"},
         },
         "conan_requirements": list(requirements),
-        "provider_controls": {
-            "homebrew": {},
-            "chocolatey": {},
-            "conan": {
-                "repository": CONTROL_REPOSITORY,
-                "control_tag": "release-control-v3",
-                "control_commit": control_sha,
-                "workflow": "conan-center-pr.yml",
-            },
-        },
     }
 
 
@@ -266,22 +266,32 @@ SOURCE_URL = (
 
 
 class SignedPolicyTests(unittest.TestCase):
-    def test_contract_binds_destination_control_and_requirements(self) -> None:
-        _verify_publication_contract(
-            contract(),
-            provider_control_sha=CONTROL_SHA,
-            publisher_repository_id="60",
-            conan_requirements=REQUIREMENTS,
-        )
+    def test_contract_binds_destination_and_requirements(self) -> None:
+        former_controls = {
+            "homebrew": {},
+            "chocolatey": {},
+            "conan": {
+                "repository": CONTROL_REPOSITORY,
+                "control_tag": "release-control-v3",
+                "control_commit": SOURCE_SHA,
+                "workflow": "conan-center-pr.yml",
+            },
+        }
+        # Contracts signed before publishers ran from main carry provider_controls.
+        for accepted in (contract(), {**contract(), "provider_controls": former_controls}):
+            _verify_publication_contract(
+                accepted,
+                publisher_repository_id="60",
+                conan_requirements=REQUIREMENTS,
+            )
         for candidate, publisher_id, message in (
-            (contract(SOURCE_SHA), "60", "control"),
+            ({**contract(), "unexpected": {}}, "60", "schema"),
             (contract(), "61", "destination"),
             (contract(requirements=REQUIREMENTS[:2]), "60", "requirements"),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 _verify_publication_contract(
                     candidate,
-                    provider_control_sha=CONTROL_SHA,
                     publisher_repository_id=publisher_id,
                     conan_requirements=REQUIREMENTS,
                 )
@@ -468,6 +478,7 @@ class FakeGitHub:
         self.blobs: dict[str, bytes] = {}
 
     def request(self, method, path, expected, body=None):
+        check_route(path)
         response = self._route(method, path, body)
         if response.status not in expected:
             raise PushError(f"{method} {path}: unexpected HTTP {response.status}")
@@ -621,6 +632,18 @@ class PushRecipeTests(unittest.TestCase):
                 upstream_id=UPSTREAM_ID,
             )
         self.assertEqual(client.writes, [])
+
+    def test_route_check_allows_compare_and_refuses_traversal(self) -> None:
+        check_route("/repos/conan-io/conan-center-index/compare/master...yurirocha15:conan-center-index:master")
+        for path in (
+            "/user",
+            "/repos/yurirocha15/conan-center-index/../../user",
+            "/repos/yurirocha15/./conan-center-index",
+            "/repos//conan-center-index",
+            "/repos/yurirocha15/conan-center-index/",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(PushError, "outside the fixed"):
+                check_route(path)
 
     def test_compare_link_prefills_the_pull_request(self) -> None:
         body = pull_body(version="0.2.0", commit=SOURCE_SHA, request_uuid="u")
