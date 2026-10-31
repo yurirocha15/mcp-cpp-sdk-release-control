@@ -27,9 +27,7 @@ STABLE_CAPABILITIES = [
     "github", "conan2", "apt", "rpm", "aur", "homebrew", "chocolatey"
 ]
 PUBLISHER_REPOSITORY = "yurirocha15/mcp-cpp-sdk-release-control"
-PUBLISHER_WORKFLOW = "conan-center-pr.yml"
 SOURCE_REPOSITORY = "yurirocha15/mcp-cpp-sdk"
-CONTROL_TAG = "release-control-v3"
 CONTRACT_ASSET = "release-publication-contract.json"
 CONFIG_ENTRY = "conan-recipe-config-entry.json"
 CONANDATA_ENTRY = "conan-recipe-conandata-entry.json"
@@ -72,7 +70,6 @@ def verify(
     primary_fingerprint: str,
     tag_fingerprint: str,
     artifact_fingerprint: str,
-    provider_control_sha: str,
     publisher_repository_id: str,
     recipe_output: Path | None = None,
 ) -> None:
@@ -173,7 +170,6 @@ def verify(
 
     _verify_publication_contract(
         _read_json(directory / CONTRACT_ASSET),
-        provider_control_sha=provider_control_sha,
         publisher_repository_id=publisher_repository_id,
         conan_requirements=manifest["conan_requirements"],
     )
@@ -204,17 +200,18 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
 def _verify_publication_contract(
     value: object,
     *,
-    provider_control_sha: str,
     publisher_repository_id: str,
     conan_requirements: object,
 ) -> None:
     fields = {
         "schema_version", "native_targets", "native_builders", "channel_targets",
-        "destinations", "conan_requirements", "provider_controls",
+        "destinations", "conan_requirements",
     }
+    # Contracts signed before publishers ran from protected main also carry
+    # ``provider_controls``; the publisher no longer reads it.
     if (
         not isinstance(value, dict)
-        or set(value) != fields
+        or set(value) - {"provider_controls"} != fields
         or value.get("schema_version") != 1
         or not isinstance(value.get("native_targets"), list)
         or not isinstance(value.get("native_builders"), list)
@@ -230,17 +227,6 @@ def _verify_publication_contract(
         "repository_id": publisher_repository_id,
     }:
         raise ValueError("publication contract Conan destination differs from publisher")
-    controls = _mapping(value.get("provider_controls"), "provider controls")
-    if set(controls) != {"homebrew", "chocolatey", "conan"}:
-        raise ValueError("publication contract provider inventory is not exact")
-    control = _mapping(controls.get("conan"), "Conan provider control")
-    if control != {
-        "repository": PUBLISHER_REPOSITORY,
-        "control_tag": CONTROL_TAG,
-        "control_commit": provider_control_sha,
-        "workflow": PUBLISHER_WORKFLOW,
-    }:
-        raise ValueError("publication contract Conan control differs from execution")
 
 
 def _verify_recipe_entries(
@@ -324,7 +310,6 @@ def main() -> int:
     parser.add_argument("--primary-fingerprint", required=True)
     parser.add_argument("--tag-fingerprint", required=True)
     parser.add_argument("--artifact-fingerprint", required=True)
-    parser.add_argument("--provider-control-sha", required=True)
     parser.add_argument("--publisher-repository-id", required=True)
     parser.add_argument("--recipe-output", type=Path, required=True)
     args = parser.parse_args()
@@ -345,8 +330,8 @@ def main() -> int:
             != 3
         ):
             raise ValueError("configured release fingerprint is malformed")
-        if SHA1.fullmatch(args.commit) is None or SHA1.fullmatch(args.provider_control_sha) is None:
-            raise ValueError("source or provider commit SHA is malformed")
+        if SHA1.fullmatch(args.commit) is None:
+            raise ValueError("source commit SHA is malformed")
         if re.fullmatch(r"[1-9][0-9]*", args.publisher_repository_id) is None:
             raise ValueError("publisher repository ID is malformed")
         verify(
@@ -357,7 +342,6 @@ def main() -> int:
             primary_fingerprint=args.primary_fingerprint,
             tag_fingerprint=args.tag_fingerprint,
             artifact_fingerprint=args.artifact_fingerprint,
-            provider_control_sha=args.provider_control_sha,
             publisher_repository_id=args.publisher_repository_id,
             recipe_output=args.recipe_output,
         )
